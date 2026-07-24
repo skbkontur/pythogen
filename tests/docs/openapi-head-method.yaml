@@ -1,0 +1,57 @@
+openapi: 3.1.0
+info:
+  title: APIFiddle Sample Definition
+  description: Example workspace
+  version: 0.0.0
+paths:
+  /cats/{cat_id}:
+    head:
+      operationId: headCats
+      summary: Head cats
+      parameters:
+        - in: query
+          name: cat_query
+          required: false
+          style: form
+          description: ""
+          explode: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/cat_id"
+        - in: header
+          name: cat_header
+          required: false
+          style: simple
+          description: ""
+          explode: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The request was successful; the resource metadata is in headers.
+          headers:
+            X-Cat-Name:
+              description: Generated cat name.
+              schema:
+                type: string
+            X-Cat-Age:
+              description: Generated cat age.
+              schema:
+                type: integer
+            X-Cat-Color:
+              description: Generated cat color.
+              schema:
+                type: string
+                enum: [Black, White, Gray]
+            X-Cat-Kittens-Count:
+              description: Number of kittens.
+              schema:
+                type: integer
+components:
+  parameters:
+    cat_id:
+      name: cat_id
+      in: path
+      required: true
+      schema:
+        type: string

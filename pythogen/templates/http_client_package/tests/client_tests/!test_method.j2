@@ -1,0 +1,257 @@
+{%- for path, operation in items %}
+{%- if sync %}
+def test_{{ operation.fn_name }}(client: {{ client_name }}Client,
+{%- else %}
+@pytest.mark.asyncio
+async def test_async_{{ operation.fn_name }}(async_client: {{ client_name }}ClientAsync,
+{%- endif %}httpx_mock: HTTPXMock) -> None:
+    {%- set ns = namespace(success_response=None) -%}
+    {%- for response in operation.responses.patterned.values()|sort(attribute='status_code') -%}
+    {%- if 200 <= response.status_code < 300 -%}
+    {%- set ns.success_response = response -%}
+    {%- break -%}
+    {%- endif -%}
+    {%- endfor %}
+    {%- set schema = ns.success_response.schema %}
+    {%- set resp_model_name = typerepr(schema, document) if schema else None -%}
+    {%- set response_repr = responserepr(operation.responses, document) if schema else None -%}
+    {%- set has_optional_response = is_optional_response(operation.responses, document) if schema else False -%}
+    {%- set factory_response_repr = resp_model_name ~ " | None" if has_optional_response else response_repr -%}
+
+    {%- if operation.request_body %}
+
+    {%- set body_schema = operation.request_body.schema %}
+    {%- set body_model_name = typerepr(body_schema, document) %}
+    {%- set should_match_body = not operation.request_body.is_multipart_form_data %}
+
+    {%- if operation.request_body.is_multipart_form_data %}
+    files_obj: dict[str, BinaryIO | tuple[str, BinaryIO, str]] = {
+        "file": ("test.txt", io.BytesIO(b"test"), "text/plain"),
+    }
+    {%- elif body_schema.type.is_primitive %}
+
+    {%- set body_root_name = "Body" ~ classname(body_model_name) %}
+    class {{ body_root_name }}(RootModel[{{ body_model_name }}]): ...
+    {{ varname(body_root_name ~ "_factory") }} = ModelFactory.create_factory(
+        model={{ body_root_name }}, __use_defaults__=True
+    )
+    body_obj = {{ varname(body_root_name ~ "_factory") }}.build().root
+    {%- if body_schema.format and body_schema.format.value == "binary" %}
+    body_content = body_obj
+    {%- elif body_schema.type.value %}
+    body_content = str(body_obj).encode()
+    {%- endif %}
+
+    {%- elif body_model_name == "dict[Any, Any]" %}
+    body_obj: dict[Any, Any] = {}
+    body_json = to_jsonable_python(body_obj)
+
+    {%- elif body_model_name.startswith("list[") and body_schema.items and body_schema.items is not iterable and body_schema.items.type.is_primitive %}
+
+    {%- set inner = body_model_name[5:-1] %}
+    {%- set body_root_name = "Body" ~ classname(inner) ~ "list" %}
+    class {{ body_root_name }}(RootModel[list[{{ inner }}]]): ...
+    {{ varname(body_root_name ~ "_factory") }} = ModelFactory.create_factory(
+        model={{ body_root_name }}, __use_defaults__=True
+    )
+    body_obj = {{ varname(body_root_name ~ "_factory") }}.build().root
+    body_json = to_jsonable_python(body_obj)
+
+    {%- elif body_model_name.startswith("list[") %}
+
+    {%- set inner = body_model_name[5:-1] %}
+    {%- set body_model_name = inner ~ 'list' %}
+    body_model = {{ inner }}
+    {{ varname(body_model_name ~ "_factory") }} = ModelFactory.create_factory(
+        model=body_model, __use_defaults__=True
+    )
+    body_obj = {{ varname(body_model_name ~ "_factory") }}.batch(size=3)
+    body_json = to_jsonable_python(body_obj)
+
+    {%- else %}
+    body_model = {{ body_model_name }}
+    {{ varname(body_model_name ~ "_factory") }} = ModelFactory.create_factory(
+        model=body_model, __use_defaults__=True
+    )
+    body_obj = {{ varname(body_model_name ~ "_factory") }}.build()
+    body_json = to_jsonable_python(body_obj)
+    {%- endif %}
+    {%- endif %}
+
+    {%- if operation.path_params %}
+    path_params_model = {{ classname(operation.fn_name) }}PathParams
+    {{ varname(operation.fn_name ~ "_path_params_factory") }} = ModelFactory.create_factory(
+        model=path_params_model, __use_defaults__=True
+    )
+    path_params_obj = {{ varname(operation.fn_name ~ "_path_params_factory") }}.build()
+    path_params_json = to_jsonable_python(path_params_obj)
+    {%- endif %}
+
+    {%- if operation.query_params %}
+    query_params_model = {{ classname(operation.fn_name) }}QueryParams
+    {{ varname(operation.fn_name ~ "_query_params_factory") }} = ModelFactory.create_factory(
+        model=query_params_model, __use_defaults__=True
+    )
+    query_params_obj = {{ varname(operation.fn_name ~ "_query_params_factory") }}.build()
+    query_params_json = to_jsonable_python(query_params_obj)
+    {%- endif %}
+
+    {%- set url = urljoin(base_url, path) %}
+
+    {%- if operation.query_params %}
+        {%- set url = url ~ "?{query_params}" %}
+    {%- endif %}
+
+    {%- set url = (url) | tojson %}
+
+    {%- if operation.path_params and operation.query_params %}
+    {%- set url = url ~ ".format(**path_params_json, query_params=urlencode(query_params_json, doseq=False))," %}
+    {%- elif operation.path_params %}
+    {%- set url = url ~ ".format(**path_params_json)," %}
+    {%- elif operation.query_params %}
+    {%- set url = url ~ ".format(query_params=urlencode(query_params_json, doseq=False))," %}
+    {%- endif %}
+
+    {%- if operation.headers %}
+    headers_model = {{ classname(operation.fn_name) }}Headers
+    {{ varname(operation.fn_name ~ "_headers_factory") }} = ModelFactory.create_factory(
+        model=headers_model, __use_defaults__=True
+    )
+    headers_obj = {{ varname(operation.fn_name ~ "_headers_factory") }}.build()
+    headers_json = to_jsonable_python(headers_obj, by_alias=False)
+    {%- endif %}
+
+    {%- if not schema %}
+    result_obj = None
+    httpx_mock.add_response(
+        method="{{ method }}",
+        content=b"",
+        {%- if operation.headers %}
+        match_headers=headers_json,
+        {%- endif %}
+        {%- if operation.request_body and should_match_body %}
+        {%- if body_schema.type.is_primitive %}
+        match_content=body_content,
+        {%- else %}
+        match_json=body_json,
+        {%- endif %}
+        {%- endif %}
+        url={{ url }}
+    )
+
+    {%- elif schema.type.is_primitive %}
+    class Resp{{ resp_model_name|capitalize }}(RootModel[{{ factory_response_repr if has_optional_response else resp_model_name }}]): ...
+    {{ varname("Resp" ~ (resp_model_name|capitalize) ~ "_factory") }} = ModelFactory.create_factory(
+        model=Resp{{ resp_model_name|capitalize }}, __use_defaults__=True
+    )
+    result_obj = {{ varname("Resp" ~ (resp_model_name|capitalize) ~ "_factory") }}.build().root
+    {%- if schema.format and schema.format.value == "binary" %}
+    httpx_mock.add_response(
+        method="{{ method }}",
+        content=result_obj,
+        {%- if operation.headers %}
+        match_headers=headers_json,
+        {%- endif %}
+        {%- if operation.request_body and should_match_body %}
+        {%- if body_schema.type.is_primitive %}
+        match_content=body_content,
+        {%- else %}
+        match_json=body_json,
+        {%- endif %}
+        {%- endif %}
+        url={{ url }}
+    )
+    {%- else %}
+    httpx_mock.add_response(
+        method="{{ method }}",
+        text=str(result_obj),
+        {%- if operation.headers %}
+        match_headers=headers_json,
+        {%- endif %}
+        {%- if operation.request_body and should_match_body %}
+        {%- if body_schema.type.is_primitive %}
+        match_content=body_content,
+        {%- else %}
+        match_json=body_json,
+        {%- endif %}
+        {%- endif %}
+        url={{ url }}
+    )
+    {%- endif %}
+
+    {%- else %}
+    {%- if has_optional_response %}
+        {%- set nullable_resp_root_name = "Resp" ~ classname(operation.fn_name) ~ "Nullable" %}
+    class {{ nullable_resp_root_name }}(RootModel[{{ factory_response_repr }}]): ...
+    {{ varname(nullable_resp_root_name ~ "_factory") }} = ModelFactory.create_factory(
+        model={{ nullable_resp_root_name }}, __use_defaults__=True
+    )
+    result_obj = {{ varname(nullable_resp_root_name ~ "_factory") }}.build().root
+    {%- elif resp_model_name == "dict[Any, Any]" %}
+    result_obj: dict[Any, Any] = {}
+    {%- elif not resp_model_name.startswith("list[") %}
+    response_model = {{ resp_model_name }}
+    {{ varname(resp_model_name ~ "_factory") }} = ModelFactory.create_factory(
+        model=response_model, __use_defaults__=True
+    )
+    result_obj = {{ varname(resp_model_name ~ "_factory") }}.build()
+    {%- elif schema.items and schema.items is not iterable and schema.items.type.is_primitive %}
+        {%- set inner = resp_model_name[5:-1] %}
+        {%- set resp_root_name = "Resp" ~ classname(inner) ~ "list" %}
+    class {{ resp_root_name }}(RootModel[list[{{ inner }}]]): ...
+    {{ varname(resp_root_name ~ "_factory") }} = ModelFactory.create_factory(
+        model={{ resp_root_name }}, __use_defaults__=True
+    )
+    result_obj = {{ varname(resp_root_name ~ "_factory") }}.build().root
+    {%- else %}
+        {%- set inner = resp_model_name[5:-1] %}
+        {%- set resp_model_name = inner ~ 'list' %}
+    response_model = {{ inner }}
+    {{ varname(resp_model_name ~ "_factory") }} = ModelFactory.create_factory(
+        model=response_model, __use_defaults__=True
+    )
+    result_obj = {{ varname(resp_model_name ~ "_factory") }}.batch(size=3)
+    {%- endif %}
+    result_json = to_jsonable_python(result_obj)
+    httpx_mock.add_response(
+        method="{{ method }}",
+        json=result_json,
+        {%- if operation.headers %}
+        match_headers=headers_json,
+        {%- endif %}
+        {%- if operation.request_body and should_match_body %}
+        {%- if body_schema.type.is_primitive %}
+        match_content=body_content,
+        {%- else %}
+        match_json=body_json,
+        {%- endif %}
+        {%- endif %}
+        url={{ url }}
+    )
+
+    {%- endif %}
+    result = {% if not sync %}await async_{% endif %}client.{{ operation.fn_name }}(
+    {%- if operation.headers %}
+        headers=headers_obj,
+    {%- endif %}
+    {%- if operation.path_params %}
+        path_params=path_params_obj,
+    {%- endif %}
+    {%- if operation.query_params %}
+        query_params=query_params_obj,
+    {%- endif %}
+    {%- if operation.request_body and operation.request_body.is_multipart_form_data %}
+        files=files_obj,
+    {%- elif operation.request_body %}
+        body = body_obj,
+    {%- endif %}
+    ){%- if not schema %}  # type: ignore[func-returns-value]{%- endif %}
+    {%- if operation.request_body and operation.request_body.is_multipart_form_data %}
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 1
+    request_content = requests[0].read()
+    assert b'filename="test.txt"' in request_content
+    assert b"\r\n\r\ntest\r\n" in request_content
+    {%- endif %}
+    assert result == result_obj
+{%- endfor %}

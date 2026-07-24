@@ -1,0 +1,18 @@
+from httptoolkit.response import Response
+
+__all__ = [
+    "{{ name }}Error",
+    "{{ name }}ApiError",
+    "{{ name }}ServerError",
+]
+
+class {{ name }}Error(Exception):
+    """Base exception"""
+
+
+class {{ name }}ApiError({{ name }}Error):
+    def __init__(self, response: Response):
+        super({{ name }}ApiError, self).__init__(response.reason)
+
+class {{ name }}ServerError({{ name }}Error):
+    """"""

@@ -1,0 +1,87 @@
+from typing import Iterator, cast, Any, Mapping, Sequence, BinaryIO, Type
+
+from httptoolkit import Header, Service, AsyncService
+from httptoolkit.request import Request
+from httptoolkit.response import Response
+from httptoolkit.transport import BaseTransport, BaseAsyncTransport, HttpxTransport, AsyncHttpxTransport
+from pydantic import BaseModel
+
+from {{ import_path }}._error_handler import ErrorHandler
+from {{ import_path }}.exceptions import {{ name }}ApiError
+
+{%- for model in models %}
+from {{ import_path }}.models.responses import {{ classname(model.id) }}
+{%- endfor %}
+
+{% if enums %}
+{% for enum_class in enums %}
+from {{ import_path }}.models.enums import {{ classname(enum_class.id) }}
+{% endfor %}
+{% endif %}
+
+{%- for operation in operations %}
+{% if operation.path_params %}from {{ import_path }}.models.requests import {{ classname(operation.fn_name) }}PathParams {% endif %}
+{% if operation.query_params %}from {{ import_path }}.models.requests import {{ classname(operation.fn_name) }}QueryParams {% endif %}
+{% if operation.headers %}from {{ import_path }}.models.requests import {{ classname(operation.fn_name) }}Headers {% endif %}
+{% endfor %}
+
+{% if sync %}
+class {{ name }}Client(Service):
+{% else %}
+class {{ name }}ClientAsync(AsyncService):
+{% endif %}
+    def __init__(
+        self,
+        headers: tuple[Header, ...] = (),
+        error_class: Type[{{ name }}ApiError] = {{ name }}ApiError,
+        {%- if sync %}
+        transport: BaseTransport = None,
+        {%- else %}
+        transport: BaseAsyncTransport = None,
+        {%- endif %}
+        *args,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            {%- if sync %}
+            transport=transport or HttpxTransport(*args, **kwargs),
+            {%- else %}
+            transport=transport or AsyncHttpxTransport(*args, **kwargs),
+            {%- endif %}
+            headers=headers
+        )
+        self._error_handler = ErrorHandler(error_class)
+
+    @staticmethod
+    def convert_headers(headers: BaseModel | None = None) -> tuple[Header, ...]:
+        if headers is None:
+            return ()
+
+        return tuple(
+            Header(name=name, value=value, is_sensitive=False)
+            for name, value in headers.model_dump().items()
+        )
+
+    {% with items=get.items(), method='get'%}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}
+
+    {%- with items=post.items(), method='post'%}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}
+
+    {%- with items=patch.items(), method='patch'%}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}
+
+    {%- with items=put.items(), method='put'%}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}
+
+    {%- with items=delete_no_body.items(), method='delete', body=False %}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}
+
+    {%- with items=head.items(), method='head', body=False %}
+    {%- include 'clients/!method.j2' %}
+    {%- endwith %}

@@ -1,0 +1,68 @@
+openapi: 3.1.0
+info:
+  title: APIFiddle Sample Definition
+  description: Example workspace
+  version: 0.0.0
+paths:
+  /cats/{cat_id}:
+    delete:
+      operationId: deleteCats
+      summary: Delete cats
+      responses:
+        "200":
+          description: The request was successful, and the server has returned the
+            requested resource in the response body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cat"
+      parameters:
+        - in: query
+          name: cat_query
+          required: false
+          style: form
+          description: ""
+          explode: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/cat_id"
+        - in: header
+          name: cat_header
+          required: false
+          style: simple
+          description: ""
+          explode: false
+          schema:
+            type: string
+components:
+  parameters:
+    cat_id:
+      name: cat_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    Cat:
+      type: object
+      properties:
+        name:
+          type: string
+        age:
+          type: integer
+        color:
+          type: string
+          enum:
+            - Black
+            - White
+            - Gray
+        kittens:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cat"
+      required:
+        - name
+        - age
+        - color
+        - kittens
+      description: ""

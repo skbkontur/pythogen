@@ -6,46 +6,73 @@ from __future__ import annotations
 
 import keyword
 import re
+import inflection
 from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
+from functools import cache, cached_property
+from typing import Any
+
+
+class Undefined:
+    ...
+
+UNDEFINED = Undefined()
+
+
+_PYDANTIC_RESERVED_PROPERTIES = frozenset({
+    "schema",
+})
+
+
+_RE_SEPARATOR_CHARACTERS = re.compile("[-.:/\\\\ ]")
+_RE_INVALID_CHARACTERS = re.compile("[^0-9a-zA-Z_]")
+_RE_INVALID_LEADING_CHARACTERS = re.compile("^[^a-zA-Z_]+")
+
+
+def _ensure_correct_python_identifier(identifier: str) -> str:
+    if identifier.isidentifier():
+        return identifier
+
+    identifier = _RE_SEPARATOR_CHARACTERS.sub("_", identifier)
+    identifier = _RE_INVALID_CHARACTERS.sub("", identifier)
+    identifier = _RE_INVALID_LEADING_CHARACTERS.sub("", identifier)
+
+    return identifier
+
+
+def _is_reserved_identifier(identifier: str, reserved: frozenset) -> bool:
+    return keyword.iskeyword(identifier) or identifier in reserved
+
+
+def ensure_not_reserved_identifier(identifier: str, reserved: frozenset, suffix: str = "_") -> str:
+    if _is_reserved_identifier(identifier, reserved):
+        return ensure_not_reserved_identifier(f"{identifier}{suffix}", reserved)
+
+    return identifier
+
+
+@cache
+def _ensure_correct_underscore_identifier(identifier: str, reserved: frozenset = frozenset()) -> str:
+    identifier = _ensure_correct_python_identifier(identifier)
+    identifier = inflection.underscore(identifier)
+    identifier = identifier.strip("_")
+    identifier = ensure_not_reserved_identifier(identifier, reserved)
+
+    return identifier
 
 
 class SafetyKeyMixin:
-    pydantic_reserved_properties = ("schema",)
 
-    @property
-    def key(self):
-        return self._safe_key()
+    @cached_property
+    def key(self) -> str:
+        identifier = _ensure_correct_underscore_identifier(self.orig_key, _PYDANTIC_RESERVED_PROPERTIES)
 
-    def _safe_key(self):
-        if self.safety_key:
-            return self.safety_key
-
-        if all(
-            (
-                self.orig_key.isidentifier(),
-                not keyword.iskeyword(self.orig_key),
-                self.orig_key not in self.pydantic_reserved_properties,
-            )
-        ):
+        if identifier == self.orig_key:
             return self.orig_key
 
-        key = self.orig_key
+        self.safety_key = identifier
 
-        if not key.isidentifier():
-            key = re.sub("[-.]", "_", key)
-            # stolen from https://stackoverflow.com/a/3303361
-            key = re.sub("[^0-9a-zA-Z_]", "", key)
-            key = re.sub("^[^a-zA-Z_]+", "", key)
-
-        if keyword.iskeyword(key):
-            key += "_"
-
-        if key in self.pydantic_reserved_properties:
-            key += "_"
-
-        self.safety_key = key
         return self.safety_key
 
 
@@ -73,15 +100,20 @@ class Format(Enum):
     float = "float"
     double = "double"
     date = "date"
+    time = "time"
     byte = "byte"
     binary = "binary"
     datetime = "date-time"
+    datespan = "date-span"
+    duration = "duration"
     password = "password"
     uuid = "uuid"
+    guid = "guid"
     uri = "uri"
     hostname = "hostname"
     ipv4 = "ipv4"
     ipv6 = "ipv6"
+    ipvanynetwork = "ipvanynetwork"
 
     @classmethod
     def _missing_(cls, value):
@@ -135,6 +167,7 @@ class Type(Enum):
     array = "array"
     object = "object"
     null = "null"
+    any = "any"
 
     @property
     def is_primitive(self) -> bool:
@@ -146,6 +179,73 @@ class Type(Enum):
             Type.null,
         )
 
+    @property
+    def is_iterable(self) -> bool:
+        return self == Type.array
+
+class SchemaType:
+    def __init__(self, types: Type | list[Type] | None = None):
+        if types is None:
+            self._types = tuple()
+        elif isinstance(types, list):
+            self._types = tuple(types)
+        elif isinstance(types, Type):
+            self._types = (types,)
+        else:
+            raise TypeError(f"Unsupported type for SchemaType: {types!r}")
+
+    def __iter__(self):
+        return iter(self._types)
+
+    def __contains__(self, t: Type) -> bool:
+        return t in self._types
+
+    def __len__(self):
+        return len(self._types)
+
+    def __getitem__(self, i: int) -> Type:
+        return self._types[i]
+
+    def __eq__(self, other):
+        if isinstance(other, SchemaType):
+            return self._types == other._types
+        if isinstance(other, Type):
+            return len(self._types) == 1 and self._types[0] == other
+        return NotImplemented
+
+    def __hash__(self):
+        if len(self._types) == 1:
+            return hash(self._types[0])
+        return hash(self._types)
+
+    def __getattr__(self, name):
+        if len(self._types) == 1:
+            return getattr(self._types[0], name)
+        raise AttributeError(
+            f"'SchemaType' has no attribute '{name}' (multiple types present: {[t.value for t in self._types]})"
+        )
+
+    def __repr__(self):
+        if not self._types:
+            return "SchemaType()"
+
+        if len(self._types) == 1:
+            return f"SchemaType({self._types[0]!r})"
+
+        types_repr = ", ".join(repr(t) for t in self._types)
+        return f"SchemaType([{types_repr}])"
+
+    @property
+    def is_primitive(self) -> bool:
+        return all(t.is_primitive for t in self._types)
+
+    @property
+    def is_iterable(self) -> bool:
+        return any(t.is_iterable for t in self._types)
+
+    @property
+    def is_multiple(self) -> bool:
+        return len(self._types) > 1
 
 @dataclass
 class SchemaProperty(SafetyKeyMixin):
@@ -163,16 +263,19 @@ class SchemaObject:
     id: str
     title: str | None
     enum: list[str] | None
-    type: Type
+    type: SchemaType
     format: Format | None
     items: "SchemaObject" | list["SchemaObject"] | None
     properties: list[SchemaProperty]
+    default: Any
     description: str | None = None
     additional_roperties: bool = False
     required: list[str] = field(default_factory=list)
     all_of: list["SchemaObject"] = field(default_factory=list)
     any_of: list["SchemaObject"] = field(default_factory=list)
+    one_of: list["SchemaObject"] = field(default_factory=list)
     discriminator: Discriminator | None = None
+    nullable: bool = False
 
     # numbers
     minimum: int | None = None
@@ -184,6 +287,10 @@ class SchemaObject:
     discriminator_base_class_schema: DiscriminatorBaseClassSchema | None = None
     is_fake: bool = False
     is_inline: bool = False
+
+    @property
+    def is_nullable(self) -> bool:
+        return self.nullable is True or Type.null in self.type
 
     @property
     def required_properties(self) -> list[SchemaProperty]:
@@ -208,10 +315,18 @@ class SchemaObject:
         return [item for item in self.all_of if not item.is_inline]
 
     @property
+    def is_single_allof_ref_obj(self) -> bool:
+        return self.id.endswith("_ref_obj") and len(self.all_of) == 1
+
+    @property
+    def is_single_oneof_obj(self) -> bool:
+        return self.id.endswith("_obj") and len(self.one_of) == 1
+
+    @property
     def is_empty_object(self) -> bool:
         return all(
             (
-                self.type is Type.object,
+                self.type == Type.object,
                 not self.is_fake,
                 not self.enum,
                 not self.items,
@@ -219,7 +334,20 @@ class SchemaObject:
                 not self.required,
                 not self.all_of,
                 not self.any_of,
+                not self.one_of,
                 not self.discriminator,
+            )
+        )
+
+    @property
+    def is_empty_properties(self) -> bool:
+        return all(
+            (
+                not self.properties,
+                not self.required,
+                not self.all_of,
+                not self.any_of,
+                not self.one_of,
             )
         )
 
@@ -284,12 +412,9 @@ class OperationObject:
     @property
     def fn_name(self) -> str | None:
         if self.operation_id is not None:
-            return self.operation_id.replace("-", "_")
+            return _ensure_correct_underscore_identifier(self.operation_id)
 
-        name = self.path_str.removeprefix("/").replace("-", "_").replace("/", "_").replace("{", "").replace("}", "")
-        name = self.method.value + "_" + name
-        name = name.lower()
-        return name
+        return f"{self.method.value.lower()}_{_ensure_correct_underscore_identifier(self.path_str)}"
 
 
 @dataclass
@@ -307,6 +432,7 @@ class PathItemObject:
 class ResponseObject:
     id: str
     description: str
+    status_code: int
     schema: SchemaObject | None
 
 
@@ -337,13 +463,14 @@ class Document:
 
             schema = self.schemas[key]
 
-            for all_of_item in schema.all_of:
-                if all_of_item.id in key_for_processing and all_of_item.id not in sorted:
-                    sorted.insert(index, all_of_item.id)
+            self._add_one_of_items_in_sorted(schema, key_for_processing, index, sorted)
+            self._add_all_of_items_in_sorted(schema, key_for_processing, index, sorted)
 
             for property in schema.properties:
                 if property.schema.id in key_for_processing and property.schema.id not in sorted:
                     sorted.insert(index, property.schema.id)
+                    self._add_one_of_items_in_sorted(property.schema, key_for_processing, index, sorted)
+                    self._add_all_of_items_in_sorted(property.schema, key_for_processing, index, sorted)
                 if property.schema.items:
                     if isinstance(property.schema.items, list):
                         for items in property.schema.items:
@@ -351,7 +478,6 @@ class Document:
                                 sorted.insert(index, items.id)
                     elif property.schema.items.id in self.schemas:
                         sorted.insert(index, property.schema.items.id)
-
         sorted_schemas = []
         for key in sorted:
             if self.schemas[key] not in sorted_schemas:
@@ -359,12 +485,26 @@ class Document:
 
         if exclude_enums:
             sorted_schemas = [s for s in sorted_schemas if s.enum is None]
-
         return sorted_schemas
+
+    def _add_all_of_items_in_sorted(self, schema, key_for_processing, index, sorted):
+        for all_of_item in schema.all_of:
+            if all_of_item.id in key_for_processing:
+                sorted.insert(index, all_of_item.id)
+
+
+    def _add_one_of_items_in_sorted(self, schema, key_for_processing, index, sorted):
+        for one_of_item in schema.one_of:
+            if one_of_item.id in key_for_processing:
+                sorted.insert(index, one_of_item.id)
 
     @property
     def sorted_schemas(self) -> list[SchemaObject]:
-        keys = [key for key, schema in self.schemas.items() if schema.enum is None and not schema.type.is_primitive]
+        keys = [
+            key
+            for key, schema in self.schemas.items()
+            if schema.enum is None and not schema.type.is_primitive and not schema.is_single_allof_ref_obj and not schema.is_single_oneof_obj
+        ]
         return self._build_sorted_schemas(keys, exclude_enums=True)
 
     @property
@@ -383,3 +523,21 @@ class DiscriminatorBaseClassSchema:
 class Discriminator:
     property_name: str
     mapping: dict[str, SchemaObject]
+
+@dataclass
+class HttpMethodObject:
+    name: str
+    method: HttpMethod
+    params: MethodParams
+
+@dataclass
+class MethodParams:
+    params_name: str | None = None
+    query_params: dict[str, Any | None] = dict
+    path_params: dict[str, Any | None] = dict
+    body: dict[str, Any] = dict
+    body_name: str | None = None
+
+class ValueContext(Enum):
+    param = "param"
+    body = "body"

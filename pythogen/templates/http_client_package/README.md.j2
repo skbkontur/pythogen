@@ -1,0 +1,65 @@
+# {{ package_name }}
+<!-- Purpose of use -->
+Client for [{{ service_name | capitalize }}]({{ doc_link }}).
+
+> :warning: The library is the result of automatic generation.
+
+## asyncio support
+<!--
+Available values:
+*Yes
+*No
+*Partial
+-->
+Yes
+
+## Installation
+```bash
+pip install {{ package_name }}
+```
+
+## Usage example
+```python
+{%- set operation = operations[0] %}
+from {{ package_import_path }}.clients import {{ client_name }}Client
+{%- if operation.query_params %}
+from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}QueryParams
+{%- endif %}
+{%- if operation.path_params %}
+from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}PathParams
+{%- endif %}
+{%- if operation.headers %}
+from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}Headers
+{%- endif %}
+{%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) and operation.request_body.schema.id != "<inline+SchemaObject>"%}
+from {{ package_import_path }}.models.responses import {{ classname(operation.request_body.schema.id) }}
+{%- endif %}
+
+{{ service_name }} = {{ client_name }}Client(base_url="{{ base_url }}")
+{%- if operation.query_params %}
+{{ query_params_repr(operation, document) }}
+{%- endif %}
+{%- if operation.path_params %}
+{{ path_params_repr(operation, document) }}
+{%- endif %}
+{%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) %}
+{{ body_repr(operation, document) }}
+{%- endif %}
+{%- if operation.headers %}
+{{ headers_repr(operation, document) }}
+{%- endif %}
+{%- set params_list = [] %}
+{%- if operation.query_params -%}
+    {%- set _ = params_list.append('query_params=query_params') %}
+{%- endif %}
+{%- if operation.path_params -%}
+    {%- set _ = params_list.append('path_params=path_params') %}
+{%- endif %}
+{%- if operation.headers -%}
+    {%- set _ = params_list.append('headers=headers') %}
+{%- endif %}
+{%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) -%}
+    {%- set _ = params_list.append('body=body') %}
+{%- endif %}
+result = {{ service_name }}.{{ operation.fn_name }}({{ params_list | join(', ') }})
+```

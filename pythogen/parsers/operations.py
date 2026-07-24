@@ -49,7 +49,7 @@ class OperationParser:
             else:
                 response_id = f"{operation_id}Response{status_code}"
 
-            responses[status_code] = self._response_parser.parse_item(response_id, response_data)
+            responses[status_code] = self._response_parser.parse_item(response_id, response_data, int(status_code))
 
         request_body_data = operation_data.get("requestBody")
         if request_body_data:
@@ -68,8 +68,8 @@ class OperationParser:
             path_str=path_str,
         )
 
+    @staticmethod
     def parse_operation_id(
-        self,
         path_str: str,
         method: models.HttpMethod,
         operation_data: dict[str, Any],

@@ -1,0 +1,46 @@
+{% with sync=false%}
+{%- include 'tests/client_tests/!test.j2' %}
+{%- endwith %}
+
+{% with items=get.items(), method='get', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% with items=post.items(), method='post', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% with items=patch.items(), method='patch', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% with items=put.items(), method='put', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% with items=delete.items(), method='delete', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% with items=head.items(), method='head', sync=false%}
+{%- include 'tests/client_tests/!test_method.j2' %}
+{%- endwith %}
+
+{% set chosen = (get.items()|list)
+                or (post.items()|list)
+                or (patch.items()|list)
+                or (put.items()|list)
+                or (delete.items()|list)
+                or (head.items()|list) %}
+{% set method =
+  'get' if chosen == (get.items()|list) else
+  'post' if chosen == (post.items()|list) else
+  'patch' if chosen == (patch.items()|list) else
+  'put' if chosen == (put.items()|list) else
+  'delete' if chosen == (delete.items()|list) else
+  'head' if chosen == (head.items()|list) else
+  'unknown' %}
+{% set path, operation = chosen|first %}
+{% with path=path, operation=operation, method=method, sync=false%}
+{%- include 'tests/client_tests/!test_error_method.j2' %}
+{%- endwith %}

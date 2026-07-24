@@ -1,0 +1,94 @@
+{%- include 'models/!imports.j2' %}
+
+{% if enums %}
+from {{ import_path }}.models.enums import (
+    {% for enum_class in enums %}
+    {{ classname(enum_class.id) }},
+    {% endfor %}
+)
+{% endif %}
+
+{% for model in models %}
+{%- if model.type == Type.null  %}
+{%- elif model.is_empty_object  %}
+{%- elif model.all_of %}
+{%- else %}
+from {{ import_path }}.models.responses import {{ classname(model.id) }}
+{%- endif %}
+{% endfor %}
+
+__all__ = [
+    {%- for operation in operations %}
+        {% if operation.path_params %}"{{ classname(operation.fn_name) }}PathParams", {% endif %}
+        {% if operation.query_params %}"{{ classname(operation.fn_name) }}QueryParams", {% endif %}
+        {% if operation.headers %}"{{ classname(operation.fn_name) }}Headers", {% endif %}
+    {% endfor %}
+]
+
+class BaseConfig:
+    model_config = ConfigDict(
+        validate_by_name=True,
+        validate_by_alias=True,
+    )
+
+{% for operation in operations %}
+
+{# Path Parameters #}
+{# ------------------------------------------------------------------------- #}
+{% if operation.path_params %}
+class {{ classname(operation.fn_name) }}PathParams(BaseModel, BaseConfig):
+    {#- required #}
+    {%- for parameter in operation.path_params %}
+    {%- if parameter.required %}
+    {{ varname(parameter.key) }}: {{ typerepr(parameter.schema, document) }} = {{ parameterfield(parameter) }}
+    {%- endif %}
+    {%- endfor %}
+
+    {#- optional #}
+    {%- for parameter in operation.path_params -%}
+    {%- if not parameter.required %}
+    {{ varname(parameter.key) }}: {{ typerepr(parameter.schema, document) }} | MISSING = {{ parameterfield(parameter) }}
+    {%- endif %}
+    {%- endfor %}
+{% endif %}
+
+
+{# Query Parameters #}
+{# ------------------------------------------------------------------------- #}
+{% if operation.query_params %}
+class {{ classname(operation.fn_name) }}QueryParams(BaseModel, BaseConfig):
+    {#- required #}
+    {%- for parameter in operation.query_params -%}
+    {%- if parameter.required %}
+    {{ varname(parameter.key) }}: {{ typerepr(parameter.schema, document) }} = {{ parameterfield(parameter) }}
+    {%- endif %}
+    {%- endfor %}
+
+    {#- optional #}
+    {%- for parameter in operation.query_params -%}
+    {%- if not parameter.required %}
+    {{ varname(parameter.key) }}: {{ typerepr(parameter.schema, document) }} | MISSING = {{ parameterfield(parameter) }}
+    {%- endif %}
+    {%- endfor %}
+{%- endif %}
+
+{# Header Parameters #}
+{# ------------------------------------------------------------------------- #}
+{% if operation.headers %}
+class {{ classname(operation.fn_name) }}Headers(BaseModel, BaseConfig):
+    {#- required #}
+    {%- for header in operation.headers -%}
+    {%- if header.required %}
+    {{ varname(header.key) }}: {{ typerepr(header.schema, document) }} = {{ parameterfield(header) }}
+    {%- endif %}
+    {%- endfor %}
+
+    {#- optional #}
+    {%- for header in operation.headers -%}
+    {%- if not header.required %}
+    {{ varname(header.key) }}: {{ typerepr(header.schema, document) }} | MISSING = {{ parameterfield(header) }}
+    {%- endif %}
+    {%- endfor %}
+{%- endif %}
+
+{% endfor %}

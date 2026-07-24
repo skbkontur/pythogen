@@ -41,6 +41,7 @@ class SchemaParser:
         openapi_data: dict[str, Any],
         discriminator_base_class_schemas: list[models.DiscriminatorBaseClassSchema],
         inline_schema_aggregator: InlineSchemasAggregator,
+        ignore_unknown_format: bool,
     ) -> None:
         self._openapi_data = openapi_data
         self._ref_resolver = ref_resolver
@@ -49,6 +50,7 @@ class SchemaParser:
 
         self._processiong_parsed_schema_id_count: dict[str, int] = defaultdict(int)
         self._schemas: dict[str, models.SchemaObject] = {}
+        self._ignore_unknown_format = ignore_unknown_format
 
     def parse_collection(self) -> dict[str, models.SchemaObject]:
         schemas_data = self._openapi_data.get("components", {}).get("schemas", {})
@@ -83,9 +85,6 @@ class SchemaParser:
             return self._schemas[schema_id]
 
         schema_type = self._parse_type(schema_data)
-        all_of = self._parse_all_of(schema_id, schema_data)
-        any_of = self._parse_any_of(schema_id, schema_data)
-
         self._processiong_parsed_schema_id_count[schema_id] += 1
         if self._processiong_parsed_schema_id_count[schema_id] > 1 and from_depth_level:
             """
@@ -102,6 +101,8 @@ class SchemaParser:
                 id=schema_id,
                 title=schema_data.get("title"),
                 required=schema_data.get("required", []),
+                default=schema_data.get("default", models.UNDEFINED),
+                nullable=schema_data.get("nullable", False),
                 enum=schema_data.get("enum"),
                 type=schema_type,
                 format=self._parse_format(schema_data),
@@ -109,15 +110,20 @@ class SchemaParser:
                 properties=[],
                 description=self._get_description(schema_data),
                 is_fake=True,
-                all_of=all_of,
-                any_of=any_of,
+                all_of=[],
+                any_of=[],
+                one_of=[],
                 is_inline=is_inline,
-                discriminator=self._parse_discriminator(schema_data),
+                discriminator=None,
                 minimum=schema_data.get("minimum"),
                 maximum=schema_data.get("maximum"),
                 exclusive_minimum=schema_data.get("exclusiveMinimum", False),
                 exclusive_maximum=schema_data.get("exclusiveMaximum", False),
             )
+
+        all_of = self._parse_all_of(schema_id, schema_data)
+        any_of = self._parse_any_of(schema_id, schema_data)
+        one_of = self._parse_one_of(schema_id, schema_data)
 
         discr_schema = self._get_discriminator_base_class_schema(schema_data)
         if discr_schema and discr_schema not in self._discriminator_base_class_schemas:
@@ -127,6 +133,8 @@ class SchemaParser:
             id=schema_id,
             title=schema_data.get("title"),
             required=schema_data.get("required", []),
+            nullable=schema_data.get("nullable", False),
+            default=schema_data.get("default", models.UNDEFINED),
             enum=schema_data.get("enum"),
             type=schema_type,
             format=self._parse_format(schema_data),
@@ -135,6 +143,7 @@ class SchemaParser:
             description=self._get_description(schema_data),
             all_of=all_of,
             any_of=any_of,
+            one_of=one_of,
             is_inline=is_inline,
             discriminator=self._parse_discriminator(schema_data),
             minimum=schema_data.get("minimum"),
@@ -155,7 +164,8 @@ class SchemaParser:
                 all_of_item_schema = self.parse_item(
                     all_of_item_schema_id, all_of_item, from_depth_level=True, is_inline=True
                 )
-                self._inline_schema_aggregator.add(all_of_item_schema_id, all_of_item_schema)
+                if not all_of_item_schema.is_fake:
+                    self._inline_schema_aggregator.add(all_of_item_schema_id, all_of_item_schema)
                 result.append(all_of_item_schema)
 
         return result
@@ -170,30 +180,58 @@ class SchemaParser:
             else:
                 any_of_item_schema_id = f"{parent_id}_item_{i}"
                 any_of_item_schema = self.parse_item(any_of_item_schema_id, any_of_item, from_depth_level=True)
-                self._inline_schema_aggregator.add(any_of_item_schema_id, any_of_item_schema)
+                if not any_of_item_schema.is_fake:
+                    self._inline_schema_aggregator.add(any_of_item_schema_id, any_of_item_schema)
                 result.append(any_of_item_schema)
 
         return result
 
-    def _parse_type(self, data: dict[str, Any]) -> models.Type:
+    def _parse_one_of(self, parent_id: str, parent_data: dict[str, Any]) -> list[models.SchemaObject]:
+        result: list[models.SchemaObject] = []
+        for i, one_of_item in enumerate(parent_data.get("oneOf", [])):
+            if ref := one_of_item.get("$ref"):
+                resolved_ref = self._ref_resolver.resolve(ref)
+                one_of_item_schema = self.parse_item(resolved_ref.ref_id, resolved_ref.ref_data, from_depth_level=True)
+                result.append(one_of_item_schema)
+            else:
+                one_of_item_schema_id = f"{parent_id}_item_{i}"
+                one_of_item_schema = self.parse_item(one_of_item_schema_id, one_of_item, from_depth_level=True)
+                if not one_of_item_schema.is_fake:
+                    self._inline_schema_aggregator.add(one_of_item_schema_id, one_of_item_schema)
+                result.append(one_of_item_schema)
+
+        return result
+
+    def _parse_type(self, data: dict[str, Any]) -> models.SchemaType:
         if data == {}:
             # Парсинг пустой схемы
             # application/json:
             #   schema:
             #     {}
-            data_type = models.Type.object
+            data_type = models.SchemaType(models.Type.object)
         elif "allOf" in data:
-            data_type = models.Type.object
+            data_type = models.SchemaType(models.Type.object)
         elif "anyOf" in data:
-            data_type = models.Type.object
+            data_type = models.SchemaType(models.Type.object)
+        elif "oneOf" in data:
+            data_type = models.SchemaType(models.Type.object)
         elif "type" not in data:
-            data_type = models.Type.object
+            data_type = models.SchemaType(models.Type.any)
         else:
-            raw_data_type: str | None = data.get("type")
-            try:
-                data_type = models.Type(raw_data_type)
-            except ValueError as exc:
-                raise Exception(f'Unable to parse schema, unknown type "{raw_data_type}" on "{data}"') from exc
+            raw_type: str | list[str] | None = data.get("type")
+            if isinstance(raw_type, list):
+                types = []
+                for t in raw_type:
+                    try:
+                        types.append(models.Type(t))
+                    except ValueError:
+                        raise Exception(f'Unknown type "{t}" in schema {data}')
+                data_type = models.SchemaType(types)
+            else:
+                try:
+                    data_type = models.SchemaType(models.Type(raw_type))
+                except ValueError:
+                    raise Exception(f'Unknown type "{raw_type}" in schema {data}')
         return data_type
 
     def _parse_format(self, data: dict[str, Any]) -> models.Format | None:
@@ -201,13 +239,19 @@ class SchemaParser:
         if data_format:
             try:
                 return models.Format(data_format)
-            except Exception as exc:
+
+            except ValueError as exc:
+                if self._ignore_unknown_format:
+                    return None
+
                 raise Exception(f'Unable to parse schema, unknown format "{data_format}"') from exc
+
         return None
 
     def _get_description(self, data: dict[str, Any]) -> str | None:
         description = data.get("description", "")
         if description:
+            description = description.replace("\r", "\\r")
             description = description.replace("\n", "\\n")
             description = description.replace("'", "\\'")
             description = description.replace('"', '\\"')
@@ -265,18 +309,22 @@ class SchemaParser:
 
     def _parse_properties(
         self,
-        schema_type: models.Type,
+        schema_type: models.SchemaType,
         data: dict[str, Any],
     ) -> list[models.SchemaProperty]:
         data_format = data.get("format")
         if data_format:
             try:
                 data_format = models.Format(data_format)
-            except Exception as exc:
-                raise Exception(f'Unable to parse schema "{id}", unknown format "{data_format}"') from exc
+
+            except ValueError as exc:
+                if self._ignore_unknown_format:
+                    data_format = None
+
+                else:
+                    raise Exception(f'Unable to parse schema, unknown format "{data_format}"') from exc
 
         properties = []
-
         properties_map = data.get("properties")
         if properties_map:
             for key, property_schema_data in properties_map.items():
@@ -286,10 +334,12 @@ class SchemaParser:
                     property_schema_id = resolved_ref.ref_id
                     schema = self.parse_item(property_schema_id, property_schema_data, from_depth_level=True)
                 else:
-                    if (
-                        property_schema_data.get("type") == models.Type.object.value
-                        and "properties" in property_schema_data
-                    ):
+                    type_ = property_schema_data.get("type")
+                    is_object_type = (
+                        type_ == models.Type.object.value
+                        or (isinstance(type_, list) and models.Type.object.value in type_)
+                    )
+                    if is_object_type and "properties" in property_schema_data:
                         # extract inline object definition to schema
                         property_schema_id = key + "_obj"
                         schema = self.parse_item(property_schema_id, property_schema_data)
@@ -302,7 +352,7 @@ class SchemaParser:
                         # specify inline array name
                         property_schema_id = key + "_list"
                         schema = self.parse_item(property_schema_id, property_schema_data)
-                    elif "anyOf" in property_schema_data:
+                    elif "anyOf" in property_schema_data or "oneOf" in property_schema_data:
                         # extract inline object definition to schema
                         property_schema_id = key + "_obj"
                         schema = self.parse_item(property_schema_id, property_schema_data)
@@ -323,16 +373,17 @@ class SchemaParser:
                     )
                 )
         else:
-            if schema_type == models.Type.string and not data_format:
+            if models.Type.string in schema_type and not data_format:
                 properties.append(
                     models.SchemaProperty(
                         orig_key="text",
                         safety_key=None,
                         schema=models.SchemaObject(
                             id="",
-                            type=models.Type.string,
+                            type=models.SchemaType(models.Type.string),
                             enum=None,
                             properties=[],
+                            default=data.get("default"),
                             title=None,
                             format=None,
                             items=None,
@@ -340,16 +391,17 @@ class SchemaParser:
                         ),
                     )
                 )
-            if schema_type == models.Type.string and data_format == models.Format.binary:
+            if models.Type.string in schema_type and data_format == models.Format.binary:
                 properties.append(
                     models.SchemaProperty(
                         orig_key="content",
                         safety_key=None,
                         schema=models.SchemaObject(
                             id="",
-                            type=models.Type.string,
+                            type=models.SchemaType(models.Type.string),
                             enum=None,
                             properties=[],
+                            default=data.get("default"),
                             title=None,
                             format=models.Format.binary,
                             items=None,
@@ -358,16 +410,17 @@ class SchemaParser:
                     )
                 )
 
-            if schema_type == models.Type.integer:
+            if models.Type.integer in schema_type:
                 properties.append(
                     models.SchemaProperty(
                         orig_key="text",
                         safety_key=None,
                         schema=models.SchemaObject(
                             id="",
-                            type=models.Type.integer,
+                            type=models.SchemaType(models.Type.integer),
                             enum=None,
                             properties=[],
+                            default=data.get("default"),
                             title=None,
                             format=None,
                             items=None,
@@ -398,7 +451,19 @@ class SchemaParser:
                 schema = self.parse_item(items_schema_id, items_schema_data)
                 items_schema_data_type = items_schema_data.get("type")
 
-                if items_schema_data_type and not models.Type(items_schema_data_type).is_primitive:
+                should_add_inline = schema.enum is not None
+                if items_schema_data_type:
+                    if isinstance(items_schema_data_type, list):
+                        should_add_inline = should_add_inline or any(
+                            not models.Type(t).is_primitive for t in items_schema_data_type
+                        )
+                    else:
+                        should_add_inline = should_add_inline or not models.Type(items_schema_data_type).is_primitive
+
+                if should_add_inline and items_schema_id not in (
+                    "<inline+SchemaObject>",
+                    "<inline+SchemaObject>Item",
+                ):
                     self._inline_schema_aggregator.add(items_schema_id, schema)
 
                 return schema
