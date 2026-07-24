@@ -1,0 +1,52 @@
+from urllib.parse import urlencode
+import io
+import pytest
+from pytest_httpx import HTTPXMock
+from pydantic import HttpUrl, RootModel
+from pydantic_core import to_jsonable_python
+from polyfactory.factories.pydantic_factory import ModelFactory
+import datetime
+from typing import Any, BinaryIO, get_args
+from httptoolkit.response import Response
+
+from {{ package_import_path }}.exceptions import {{ client_name }}ApiError
+from {{ package_import_path }}.clients import {{ client_name }}Client, {{ client_name }}ClientAsync
+{%- for model in models %}
+from {{ package_import_path }}.models.responses import {{ classname(model.id) }}
+{%- endfor %}
+
+{% if enums %}
+{% for enum_class in enums %}
+from {{ package_import_path }}.models.enums import {{ classname(enum_class.id) }}
+{% endfor %}
+{% endif %}
+
+{%- for operation in operations %}
+{% if operation.path_params %}from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}PathParams {% endif %}
+{% if operation.query_params %}from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}QueryParams {% endif %}
+{% if operation.headers %}from {{ package_import_path }}.models.requests import {{ classname(operation.fn_name) }}Headers {% endif %}
+{% endfor %}
+
+class CustomError({{ client_name }}ApiError):
+    def __init__(self, response: Response):
+        reason = response.reason + " My own error"
+        super({{ client_name }}ApiError, self).__init__(reason)
+
+{%- if sync %}
+@pytest.fixture
+def client() -> {{ client_name }}Client:
+    return {{ client_name }}Client(base_url="{{ base_url }}")
+
+@pytest.fixture
+def client_with_custom_error() -> {{ client_name }}Client:
+    return {{ client_name }}Client(base_url="{{ base_url }}", error_class=CustomError)
+
+{%- else %}
+@pytest.fixture
+def async_client() -> {{ client_name }}ClientAsync:
+    return {{ client_name }}ClientAsync(base_url="{{ base_url }}")
+
+@pytest.fixture
+def async_client_with_custom_error() -> {{ client_name }}ClientAsync:
+    return {{ client_name }}ClientAsync(base_url="{{ base_url }}", error_class=CustomError)
+{%- endif %}

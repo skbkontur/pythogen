@@ -2,22 +2,22 @@
 Responsible for rendering/generating client code from data
 that was parsed from an OpenAPI file.
 """
+import copy
 import logging
 import re
+import os
 from dataclasses import dataclass
-from typing import Generic
+from pathlib import Path
+from typing import Generic, Iterator, Iterable
 from typing import TypeVar
 
-import autoflake
-import black
 import inflection
-import isort
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 
 from pythogen import models
 from pythogen import settings
-
+from pythogen.models import SchemaObject
 
 PathStr = TypeVar("PathStr", bound=str)
 
@@ -27,42 +27,73 @@ logger = logging.getLogger(__name__)
 
 def render_client(
     *,
-    output_path: str,
     document: models.Document,
     name: str,
-    sync: bool,
-    metrics: bool,
-    pythogen_version: str,
-    required_headers: list[str] | None = None,
+    package_name: str,
+    output_path: Path,
+    line_length: int,
 ) -> None:
     """Отрисовывает сгенерированный клиент на основе j2-шаблонов
 
     Arguments
     ---------
-    output_path
-        Пудо до файла, в который запишется сгенерированный клиент
     document
         Спаршенный в python-объекты OpenApi-файл
     """
     env = Environment(
         loader=FileSystemLoader(settings.HTTP_CLIENT_TEMPLATES_DIR_PATH), extensions=["jinja2.ext.loopcontrols"]
     )
-    template = env.get_template(
-        settings.CLIENT_TEMPLATE_NAME,
-        globals={
-            "varname": varname,
-            "classname": classname,
-            "typerepr": j2_typerepr,
-            "responserepr": j2_responserepr,
-            "iterresponsemap": iterresponsemap,
-            "parameterfield": parameterfield,
-            "propertyfield": propertyfield,
-            "repranyof": j2_repr_any_of,
-        },
-    )
 
     prepared_operations = prepare_operations(document)
+    globals_dict = {
+        "varname": varname,
+        "classname": classname,
+        "typerepr": j2_typerepr,
+        "responserepr": j2_responserepr,
+        "is_optional_response": j2_is_optional_response,
+        "iterresponsemap": iterresponsemap,
+        "parameterfield": parameterfield,
+        "propertyfield": propertyfield,
+        "repranyof": j2_repr_any_of,
+        "docstring_lines": docstring_lines,
+        "wrap_lines": wrap_lines,
+        "line_length": line_length,
+        "Type": models.Type,
+    }
 
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    for path, _, files in os.walk(settings.HTTP_CLIENT_TEMPLATES_DIR_PATH):
+        for file in files:
+            if not file.endswith(".j2") or file.startswith("!"):
+                continue
+
+            filepath = (Path(path) / file).relative_to(settings.HTTP_CLIENT_TEMPLATES_DIR_PATH)
+            output_path_file = output_path / "src" / Path(package_name.replace(".", "/")) / filepath.with_suffix("")
+
+            template = env.get_template(
+                filepath.as_posix(),
+                globals=globals_dict,
+            )
+
+            _render_template(
+                template=template,
+                document=document,
+                prepared_operations=prepared_operations,
+                name=name,
+                import_path=package_name,
+                output_path=output_path_file,
+            )
+
+
+_RE_LINE_BREAKS = re.compile(r"\\r\\n|\\r|\\n|\r\n|\r|\n")
+
+
+def _replace_line_breaks(text: str, replacement: str) -> str:
+    return _RE_LINE_BREAKS.sub(replacement, text).strip(replacement)
+
+
+def _render_template(template, document, prepared_operations, name, import_path, output_path):
     rendered_client = template.render(
         document=document,
         name=name,
@@ -75,26 +106,14 @@ def render_client(
         post_no_body=prepared_operations.post_no_body,
         put=prepared_operations.put,
         delete_no_body=prepared_operations.delete_no_body,
-        sync=sync,
-        metrics=metrics,
+        head=prepared_operations.head,
         discriminator_base_class_schemas=document.discriminator_base_class_schemas,
-        required_headers=required_headers,
         operations=prepared_operations.all(),
-        pythogen_version=pythogen_version,
+        import_path=import_path,
     )
-    rendered_client = black.format_str(rendered_client, mode=black.Mode(line_length=120))
-    rendered_client = isort.code(
-        rendered_client,
-        force_grid_wrap=2,
-        lines_after_imports=2,
-        force_single_line=True,
-        line_length=120,
-    )
-    rendered_client = autoflake.fix_code(
-        rendered_client,
-        remove_all_unused_imports=True,
-    )
-    with open(output_path, "w") as output_file:
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as output_file:
         output_file.write(rendered_client)
 
 
@@ -106,6 +125,8 @@ class PreparedOperations(Generic[PathStr]):
     put: dict[PathStr, models.OperationObject]
     patch: dict[PathStr, models.OperationObject]
     delete_no_body: dict[PathStr, models.OperationObject]
+    head: dict[PathStr, models.OperationObject]
+
 
     def all(self) -> tuple[models.OperationObject, ...]:
         return (
@@ -115,6 +136,7 @@ class PreparedOperations(Generic[PathStr]):
             *self.put.values(),
             *self.patch.values(),
             *self.delete_no_body.values(),
+            *self.head.values(),
         )
 
 
@@ -126,6 +148,7 @@ def prepare_operations(document: models.Document) -> PreparedOperations:
         put={},
         patch={},
         delete_no_body={},
+        head={}
     )
 
     for path, path_item in document.paths.items():
@@ -140,6 +163,8 @@ def prepare_operations(document: models.Document) -> PreparedOperations:
                 prepared_operations.put[path] = operation
             elif method is models.HttpMethod.delete:
                 prepared_operations.delete_no_body[path] = operation
+            elif method is models.HttpMethod.head:
+                prepared_operations.head[path] = operation
             else:
                 logger.error(f'Unable to parse document, "{method}" operations support not implemented yet')
 
@@ -151,16 +176,18 @@ def iterresponsemap(responses: models.ResponsesObject) -> list[tuple[str, str]]:
 
     for code, response in responses.patterned.items():
         if response.schema is None:
-            mapper = "EmptyBody(status_code=response.status_code, text=response.text)"
+            mapper = "None"
             mapping.append((code, mapper))
             continue
 
-        if response.schema.type == models.Type.object and response.schema.is_empty_object:
+        schema_type = response.schema.type
+
+        if models.Type.object in schema_type and response.schema.is_empty_object:
             mapper = "response.json()"
             mapping.append((code, mapper))
             continue
 
-        if response.schema.type == models.Type.object:
+        if models.Type.object in schema_type and not response.schema.any_of:
             mapper = f"{classname(response.schema.id)}.model_validate(response.json())"
             mapping.append((code, mapper))
             continue
@@ -172,7 +199,7 @@ def iterresponsemap(responses: models.ResponsesObject) -> list[tuple[str, str]]:
             mapping.append((code, mapper))
             continue
 
-        if response.schema.type == models.Type.array:
+        if schema_type.is_iterable:
             if isinstance(response.schema.items, list):
                 items_collection = response.schema.items
             else:
@@ -180,11 +207,11 @@ def iterresponsemap(responses: models.ResponsesObject) -> list[tuple[str, str]]:
 
             for items in items_collection:
                 if items is None:
-                    mapper = "EmptyBody(status_code=response.status_code, text=response.text)"
+                    mapper = "response.text"
                     mapping.append((code, mapper))
                     continue
 
-                if items.type is models.Type.object:
+                if models.Type.object in items.type:
                     items_class_name = classname(items.id)
                     mapper = f"[{items_class_name}.model_validate(item) for item in response.json()]"
                     mapping.append((code, mapper))
@@ -195,16 +222,20 @@ def iterresponsemap(responses: models.ResponsesObject) -> list[tuple[str, str]]:
                 continue
             continue
 
-        if response.schema.type == models.Type.string and response.schema.format is models.Format.binary:
+        if models.Type.string in schema_type and response.schema.format is models.Format.binary:
             mapping.append((code, "response.content"))
             continue
 
-        if response.schema.type == models.Type.string:
+        if models.Type.string in schema_type:
             mapping.append((code, "response.text"))
             continue
 
-        if response.schema.type == models.Type.integer:
+        if models.Type.integer in schema_type:
             mapping.append((code, "int(response.text)"))
+            continue
+
+        if models.Type.any in schema_type:
+            mapping.append((code, "response.text"))
             continue
 
         raise NotImplementedError(
@@ -214,36 +245,60 @@ def iterresponsemap(responses: models.ResponsesObject) -> list[tuple[str, str]]:
     return mapping
 
 
-def j2_responserepr(responses: models.ResponsesObject, document: models.Document) -> str:
-    """Represent method response on j2 template"""
+def _collect_success_response_types(
+    responses: models.ResponsesObject, document: models.Document
+) -> tuple[list[str], list[models.SchemaObject]]:
     types = []
+    schemas: list[models.SchemaObject] = []
 
     for response in responses.patterned.values():
-        if not response.schema:
-            types.append("EmptyBody")
-        else:
+        if 300 > response.status_code >= 200 and response.schema:
             types.append(j2_typerepr(response.schema, document))
+            schemas.append(response.schema)
 
-    types = sorted(set(types))
+    return sorted(set(types)), schemas
+
+
+def j2_is_optional_response(responses: models.ResponsesObject, document: models.Document) -> bool:
+    types, schemas = _collect_success_response_types(responses, document)
+    return len(schemas) > 0 and len(types) == 1 and schemas[0].nullable
+
+
+def j2_responserepr(responses: models.ResponsesObject, document: models.Document) -> str:
+    """Represent method response on j2 template"""
+    types, _ = _collect_success_response_types(responses, document)
 
     if not types:
         return "None"
 
     elif len(types) == 1:
-        return f"{types[0]} | None"
+        if j2_is_optional_response(responses, document):
+            return f"{types[0]} | None"
+        else:
+            return f"{types[0]}"
     else:
-        return " | ".join(types)
+        return _generate_type_with_union(types)
 
 
-def j2_typerepr(schema: models.SchemaObject, document: models.Document) -> str:
+def j2_typerepr(schema: models.SchemaObject, document: models.Document, filter_null: bool = False) -> str:
     """Represent data type on j2 template"""
-    schema = document.schemas.get(schema.id, schema)
+    if schema.type.is_multiple:
+        if filter_null and schema.is_nullable:
+            types = [type_ for type_ in schema.type if type_ != models.Type.null]
+        else:
+            types = schema.type
+        if not types:
+            types = schema.type
+        repr_types = _generate_type_with_union(
+            [j2_typerepr(_schema_with_type(schema, models.SchemaType(type_)), document) for type_ in types]
+        )
+        return repr_types
 
     representation = "dict"
 
     if schema.type.is_primitive:
         if schema.enum:
-            if schema.id == "<inline+SchemaObject>":
+            if schema.id == "<inline+SchemaObject>" or schema.id == "<inline+SchemaObject>Item":
                 representation = f"Literal{schema.enum}"
             else:
                 representation = classname(schema.id)
@@ -258,16 +313,19 @@ def j2_typerepr(schema: models.SchemaObject, document: models.Document) -> str:
         else:
             representation = classname(schema.id)
 
-    elif schema.any_of:
+    elif schema.type == models.Type.any:
+        representation = "Any"
+
+    elif schema.any_of or schema.one_of:
         representation = classname(schema.id)
 
     elif (
         schema.type == models.Type.array
         and schema.items
         and isinstance(schema.items, models.SchemaObject)
-        and schema.items.any_of
+        and (schema.items.any_of or schema.items.one_of)
     ):
-        represented_items = " | ".join((j2_typerepr(anyof_item, document) for anyof_item in schema.items.any_of))
+        represented_items = _generate_type_with_union(j2_typerepr(anyof_item, document, False) for anyof_item in (schema.items.any_of or schema.items.one_of))
         representation = f"list[{represented_items}]"
 
     elif schema.type == models.Type.array and schema.items:
@@ -275,7 +333,7 @@ def j2_typerepr(schema: models.SchemaObject, document: models.Document) -> str:
         representation = f"list[{represented_item}]"
 
     elif schema.discriminator:
-        representation = " | ".join((j2_typerepr(item, document) for item in schema.discriminator.mapping.values()))
+        representation = _generate_type_with_union(j2_typerepr(item, document) for item in schema.discriminator.mapping.values())
 
     if schema.all_of and len(schema.all_of) == 1:
         representation = j2_typerepr(schema.all_of[0], document)
@@ -289,8 +347,8 @@ def j2_repr_any_of(any_of_items: list[models.SchemaObject], document: models.Doc
         if item.additional_roperties:
             items.append("dict[Any, Any]")
         elif item.type is models.Type.array and item.items:
-            repr = j2_typerepr(item, document)
-            items.append(repr)
+            representation = j2_typerepr(item, document)
+            items.append(representation)
         elif item.type.is_primitive:
             items.append(PRIMITIVE_TYPE_MAPPING[item.type])
         elif item.is_empty_object:
@@ -299,7 +357,7 @@ def j2_repr_any_of(any_of_items: list[models.SchemaObject], document: models.Doc
             items.append(classname(item.id))
         else:
             logger.error(f"j2_repr_any_of unsupported SchemaObject {item}")
-    return " | ".join(items)
+    return _generate_type_with_union(items)
 
 
 def varname(value: str) -> str:
@@ -309,23 +367,63 @@ def varname(value: str) -> str:
     return inflection.underscore(clean_value)
 
 
+_RESERVED_CLASS_NAMES = frozenset({
+    "Any",
+    "AsyncHttpxTransport",
+    "AsyncService",
+    "BaseAsyncTransport",
+    "BaseConfig",
+    "BaseModel",
+    "BaseTransport",
+    "BinaryIO",
+    "Callable",
+    "ConfigDict",
+    "Enum",
+    "ErrorHandler",
+    "Field",
+    "Header",
+    "HttpUrl",
+    "HttpxTransport",
+    "IO",
+    "IPvAnyNetwork",
+    "Iterable",
+    "Iterator",
+    "Literal",
+    "Mapping",
+    "Protocol",
+    "Response",
+    "RootModel",
+    "Sequence",
+    "Service",
+    "Type",
+    "ValidationInfo",
+})
+
+
+_RE_SPECIAL_CHARACTERS = re.compile(r"\W|^(?=\d)")
+_RE_REPEATING_UNDERSCORES = re.compile(r"_{2,}")
+
+
 def classname(value: str) -> str:
-    clean_value = re.sub(r"\W|^(?=\d)", "_", value)  # remove special characters
-    clean_value = re.sub("_{2,}", "_", clean_value)  # __ -> _
-    return inflection.camelize(clean_value)
+    clean_value = _RE_SPECIAL_CHARACTERS.sub("_", value)
+    clean_value = _RE_REPEATING_UNDERSCORES.sub("_", clean_value)
+    clean_value = clean_value.strip("_")
+    clean_value = inflection.camelize(clean_value)
+    clean_value = models.ensure_not_reserved_identifier(clean_value, reserved=_RESERVED_CLASS_NAMES, suffix="Model")
+    return clean_value
 
 
 def parameterfield(parameter: models.ParameterObject) -> str:
     args: list[str] = []
 
     if not parameter.required:
-        args.append("None")
+        args.append("MISSING")
 
     if parameter.safety_key != parameter.orig_key:
         args.append(f'alias="{parameter.orig_key}"')
 
     if parameter.description:
-        args.append(f'description="{parameter.description}"')
+        args.append(f'description="{_replace_line_breaks(parameter.description, replacement=" ")}"')
 
     if parameter.schema.discriminator:
         args.append(f'discriminator="{parameter.schema.discriminator.property_name}"')
@@ -333,45 +431,77 @@ def parameterfield(parameter: models.ParameterObject) -> str:
     return "Field(" + ", ".join(args) + ")"
 
 
-def propertyfield(property: models.SchemaProperty, parent_schema: models.SchemaObject) -> str:
+def propertyfield(schema_property: models.SchemaProperty, parent_schema: models.SchemaObject) -> str:
     args: list[str] = []
 
-    if property.orig_key not in parent_schema.required:
-        args.append("None")
+    if schema_property.schema.default is not models.UNDEFINED:
+        args.append(repr(schema_property.schema.default))
+    elif schema_property.orig_key not in parent_schema.required:
+        args.append("MISSING")
     else:
         args.append("...")
 
-    if property.schema.minimum is not None:
-        if property.schema.exclusive_minimum:
-            args.append(f"gt={property.schema.minimum}")
+    if schema_property.schema.minimum is not None:
+        if schema_property.schema.exclusive_minimum:
+            args.append(f"gt={schema_property.schema.minimum}")
         else:
-            args.append(f"ge={property.schema.minimum}")
+            args.append(f"ge={schema_property.schema.minimum}")
 
-    if property.schema.maximum is not None:
-        if property.schema.exclusive_maximum:
-            args.append(f"lt={property.schema.maximum}")
+    if schema_property.schema.maximum is not None:
+        if schema_property.schema.exclusive_maximum:
+            args.append(f"lt={schema_property.schema.maximum}")
         else:
-            args.append(f"le={property.schema.maximum}")
+            args.append(f"le={schema_property.schema.maximum}")
 
-    if property.safety_key and property.safety_key != property.orig_key:
-        args.append(f'alias="{property.orig_key}"')
+    if schema_property.safety_key and schema_property.safety_key != schema_property.orig_key:
+        args.append(f'alias="{schema_property.orig_key}"')
 
-    if not property.safety_key and varname(property.orig_key) != property.orig_key:
-        args.append(f'alias="{property.orig_key}"')
+    if not schema_property.safety_key and varname(schema_property.orig_key) != schema_property.orig_key:
+        args.append(f'alias="{schema_property.orig_key}"')
 
-    if property.schema.description:
-        args.append(f'description="{property.schema.description}"')
+    if schema_property.schema.description:
+        args.append(f'description="{_replace_line_breaks(schema_property.schema.description, replacement=" ")}"')
 
-    if property.schema.discriminator:
-        args.append(f'discriminator="{property.schema.discriminator.property_name}"')
+    if schema_property.schema.discriminator:
+        args.append(f'discriminator="{schema_property.schema.discriminator.property_name}"')
 
-    if args == ["None"]:
-        return "= None"
+    if args == ["MISSING"]:
+        return "= Field(MISSING)"
 
     if args == ["..."]:
         return ""
 
     return "= Field(" + ", ".join(args) + ")"
+
+
+def wrap_lines(lines: Iterable[str], maxlength: int) -> Iterator[str]:
+    for line in lines:
+        while len(line) > maxlength:
+            space = line.rfind(" ", 0, maxlength + 1)
+
+            if space == -1:
+                yield line[:maxlength]
+                line = line[maxlength:]
+                continue
+
+            yield line[:space].rstrip()
+            line = line[space:].lstrip()
+
+        yield line
+
+
+def docstring_lines(model: SchemaObject) -> Iterator[str]:
+    if model.title or model.description:
+        yield '"""'
+
+        if model.title:
+            yield model.title
+
+        if model.description:
+            for line in _replace_line_breaks(model.description, replacement=os.linesep).splitlines():
+                yield line
+
+        yield '"""'
 
 
 PRIMITIVE_TYPE_MAPPING = {
@@ -386,5 +516,21 @@ FORMAT_MAPPING = {
     models.Format.binary: "bytes",
     models.Format.uri: "HttpUrl",
     models.Format.date: "datetime.date",
+    models.Format.time: "datetime.time",
     models.Format.datetime: "datetime.datetime",
+    models.Format.datespan: "datetime.timedelta",
+    models.Format.duration: "datetime.timedelta",
+    models.Format.ipvanynetwork: "IPvAnyNetwork"
 }
+
+
+def _generate_type_with_union(types: Iterable[str]) -> str:
+    types_list = list(types)
+    if len(types_list) == 1:
+        return types_list[0]
+    return f"{' | '.join(types_list)}"
+
+def _schema_with_type(schema: models.SchemaObject, type_: models.SchemaType) -> models.SchemaObject:
+    schema_copy = copy.copy(schema)
+    schema_copy.type = type_
+    return schema_copy

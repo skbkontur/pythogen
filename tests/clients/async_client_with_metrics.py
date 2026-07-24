@@ -26,7 +26,6 @@ from typing import Literal
 from typing import Mapping
 from typing import Protocol
 from typing import Sequence
-from typing import Union
 from typing import get_type_hints
 
 import httpx
@@ -173,15 +172,8 @@ class DefaultLogsIntegration:
             return logging.INFO
 
 
-FileContent = Union[IO[str], IO[bytes], str, bytes]
-FileTypes = Union[
-    # file (or text)
-    FileContent,
-    # (filename, file (or text))
-    tuple[str | None, FileContent],
-    # (filename, file (or text), content_type)
-    tuple[str | None, FileContent, str | None],
-]
+FileContent = IO[str] | IO[bytes] | str | bytes
+FileTypes = FileContent | tuple[str | None, FileContent] | tuple[str | None, FileContent, str | None]
 
 
 class RequiredHeaders(Exception):

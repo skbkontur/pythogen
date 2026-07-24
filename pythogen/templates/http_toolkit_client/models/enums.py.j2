@@ -1,0 +1,30 @@
+{%- include 'models/!imports.j2' %}
+
+__all__ = [
+    {% for enum_class in enums %}
+    "{{ classname(enum_class.id) }}",
+    {% endfor %}
+]
+
+{%- for enum_class in enums %}
+{%- if enum_class.type == Type.integer  %}
+class {{ classname(enum_class.id) }}(int, Enum):
+    {%- for doc_line in wrap_lines(docstring_lines(enum_class), maxlength=line_length - 4) %}
+    {{ doc_line }}
+    {%- endfor %}
+    {%- for val in enum_class.enum %}
+    _{{ val }} = {{ val }}
+    {%- endfor %}
+{%- else %}
+class {{ classname(enum_class.id) }}(str, Enum):
+    {%- for doc_line in wrap_lines(docstring_lines(enum_class), maxlength=line_length - 4) %}
+    {{ doc_line }}
+    {%- endfor %}
+    {%- for val in enum_class.enum %}
+    {{ varname(val).upper() }} = "{{ val }}"
+    {%- endfor %}
+
+    def __str__(self) -> Any:
+        return self.value
+{%- endif %}
+{%- endfor %}

@@ -1,0 +1,78 @@
+    {%- for path, operation in items %}
+    {%- if sync %}
+    def {{ operation.fn_name }}(
+    {%- else %}
+    async def {{ operation.fn_name }}(
+    {%- endif %}
+        self,
+        {#- path params -#}
+        {%- if operation.path_params %}
+        path_params: {{ classname(operation.fn_name) }}PathParams,
+        {%- endif %}
+        {#- query params -#}
+        {%- if operation.query_params %}
+        query_params: {{ classname(operation.fn_name) }}QueryParams,
+        {%- endif %}
+        {%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) %}
+        body: {{ typerepr(operation.request_body.schema, document) }},
+        {%- endif %}
+        {%- if operation.request_body and operation.request_body.is_multipart_form_data and operation.request_body.are_files_required %}
+        files: dict[str, BinaryIO | tuple[str, BinaryIO, str]],
+        {%- endif %}
+        {%- if operation.request_body and operation.request_body.is_multipart_form_data and not operation.request_body.are_files_required %}
+        files: dict[str, BinaryIO | tuple[str, BinaryIO, str]] | None = None,
+        {%- endif %}
+        {#- headers -#}
+        {%- if operation.headers %}
+        headers: {{ classname(operation.fn_name) }}Headers | None = None,
+        {%- endif %}
+    ) -> {{ responserepr(operation.responses, document) }}:
+{#-        """#}
+{#-        {{ operation.method.value|upper }} {{ operation.path_str }}#}
+{#-        Operation ID: {{ operation.operation_id }}#}
+{#-        Summary:      {{ operation.summary }}#}
+{#-        Description:  {{ operation.description }}#}
+{#-        """#}
+        {%- if operation.path_params %}
+        path = '{{ path }}'.format(**path_params.model_dump(by_alias=True, mode="json"))
+        {%- else %}
+        path = '{{ path }}'
+        {%- endif %}
+        {%- if operation.query_params %}
+        params = query_params.model_dump(by_alias=True, mode="json", exclude_none=True)
+        {%- endif %}
+        {%- if operation.headers %}
+        headers_ = self.convert_headers(headers)
+        {%- endif %}
+        {%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) %}
+            {%- set schema = operation.request_body.schema %}
+            {%- if schema.type.is_primitive
+                   or (schema.type.is_iterable
+                       and schema.items
+                       and schema.items.type.is_primitive)
+                   or (typerepr(schema, document) == "dict[Any, Any]") %}
+        json = body
+            {%- elif operation.request_body.schema.type.is_iterable  %}
+        json = [item.model_dump(by_alias=True, mode="json") for item in body]
+            {%- else %}
+        json = body.model_dump(by_alias=True, mode="json")
+            {%- endif %}
+        {%- endif %}
+        with self._error_handler.handle():
+            response = {% if not sync %}await {% endif %}self.{{ method }}(
+                path
+                {%- if operation.request_body and not (operation.request_body.is_form_data or operation.request_body.is_multipart_form_data) %} {%- if operation.request_body.schema.type.is_primitive %}, body{%- else %}, json{%- endif %}=json{%- endif %}
+                {%- if operation.headers %}, headers=headers_{% endif %}
+                {%- if operation.query_params %}, params=params{% endif %}
+                {%- if operation.request_body and operation.request_body.is_multipart_form_data %}, files=files{%- endif %})
+        {%- if is_optional_response(operation.responses, document) %}
+        if not response.content:
+            return None
+        {%- endif %}
+        {%- for code, mapper in iterresponsemap(operation.responses) %}
+        {%- if code | int < 300 and code | int >= 200 %}
+        return {{ mapper }}
+        {%- break %}
+        {% endif %}
+        {%- endfor %}
+    {%- endfor %}

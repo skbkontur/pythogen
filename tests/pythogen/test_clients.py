@@ -9,7 +9,7 @@ from clients import sync_client
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('TEST')
 
-TEST_SERVER_URL = "http://localhost:8080"
+TEST_SERVER_URL = "http://mock-server:8080"
 
 
 def _get_httpx_sync_client():
@@ -22,7 +22,7 @@ def _get_httpx_async_client():
 
 def test_httpx_sync_client():
     httpx_sync_client = _get_httpx_sync_client()
-    
+
     # check error for not named args
     with pytest.raises(TypeError):
         httpx_sync_client.get_object(

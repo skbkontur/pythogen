@@ -57,8 +57,9 @@ class PathParser:
         """Спарсить спецификацию всех ручек из OpenAPI-спеки"""
         parsed_paths: dict[str, models.PathItemObject] = {}
         paths = self._openapi_data.get("paths", {})
+        minimized_paths = self._prepare_paths(list(paths.keys()))
         for path_str, path_item_data in paths.items():
-            parsed_paths[path_str] = self.parse_item(path_str, path_item_data)
+            parsed_paths[path_str] = self.parse_item(minimized_paths[path_str], path_item_data)
         return parsed_paths
 
     def parse_item(self, path_str: str, path_data: dict[str, Any]) -> models.PathItemObject:
@@ -70,6 +71,7 @@ class PathParser:
                 continue
 
             operation_data = path_data[method.value]
+            self._add_endpoint_parameters_to_operation(operation_data, path_data)
             operations[method] = self._operation_parser.parse_item(path_str, method, operation_data)
 
         return models.PathItemObject(
@@ -77,3 +79,25 @@ class PathParser:
             description=path_data.get("description"),
             operations=operations,
         )
+
+    @staticmethod
+    def _prepare_paths(paths: list[str]) -> dict[str, str]:
+        equals_segments = set(paths[0].split("/"))
+        result = {}
+
+        for path in paths:
+            segments = set(path.split("/"))
+            equals_segments = equals_segments.intersection(segments)
+        for path in paths:
+            segments = path.split("/")
+            for segment in equals_segments:
+                segments.remove(segment)
+            result[path] = "/".join(segments)
+
+        return result
+
+    @staticmethod
+    def _add_endpoint_parameters_to_operation(operation_data: dict[str, Any], path_data: dict[str, Any]) -> None:
+        operation_parameters = operation_data.get("parameters", []) + path_data.get("parameters", [])
+        if operation_parameters:
+            operation_data["parameters"] = operation_parameters

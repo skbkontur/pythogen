@@ -1,0 +1,74 @@
+openapi: 3.1.0
+info:
+  title: APIFiddle Sample Definition
+  description: Example workspace
+  version: 0.0.0
+paths:
+  /cats/{cat_id}:
+    post:
+      operationId: postCats
+      summary: Post cats
+      responses:
+        "201":
+          description: The request was successful, and a new resource was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cat"
+      parameters:
+        - $ref: "#/components/parameters/cat_id"
+        - in: query
+          name: cat_query
+          required: false
+          style: form
+          description: ""
+          explode: true
+          schema:
+            type: string
+        - in: header
+          name: Cat_header
+          required: false
+          style: simple
+          description: ""
+          explode: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: ""
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Cat"
+components:
+  parameters:
+    cat_id:
+      name: cat_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    Cat:
+      type: object
+      properties:
+        name:
+          type: string
+        age:
+          type: integer
+        color:
+          type: string
+          enum:
+            - Black
+            - White
+            - Gray
+        kittens:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cat"
+      required:
+        - name
+        - age
+        - color
+        - kittens
+      description: ""

@@ -26,7 +26,6 @@ from typing import Literal
 from typing import Mapping
 from typing import Protocol
 from typing import Sequence
-from typing import Union
 from typing import get_type_hints
 
 import httpx
@@ -141,15 +140,8 @@ class DefaultLogsIntegration:
             return logging.INFO
 
 
-FileContent = Union[IO[str], IO[bytes], str, bytes]
-FileTypes = Union[
-    # file (or text)
-    FileContent,
-    # (filename, file (or text))
-    tuple[str | None, FileContent],
-    # (filename, file (or text), content_type)
-    tuple[str | None, FileContent, str | None],
-]
+FileContent = IO[str] | IO[bytes] | str | bytes
+FileTypes = FileContent | tuple[str | None, FileContent] | tuple[str | None, FileContent, str | None]
 
 
 class RequiredHeaders(Exception):
@@ -569,9 +561,15 @@ class SafetyKeyForTesting(BaseModel):
         populate_by_name=True,  # Addressing by field name, even if there is an alias.
     )
     for_: str | None = Field(None, alias="for", description='reserved word, expecting "for_"')
-    class_: str | None = Field(None, alias="class", description='reserved word, expecting "class_"')
-    with_dot_and_hyphens: int | None = Field(
-        None, alias="33with.dot-and-hyphens&*", description='invalid identifier, expecting "with_dot_and_hyphens"'
+    class_: str | None = Field(
+        None,
+        alias="__Class__",
+        description='reserved word in lowercase without leading and ending underscores, expecting "class_"',
+    )
+    with_dot_hyphen_back_slash_colon_space: int | None = Field(
+        None,
+        alias="33with.dot-hyphen\\back/slash:colon space&*",
+        description='invalid identifier, expecting "with_dot_hyphen_back_slash_colon_space"',
     )
     old_feature_priority: int | None = Field(
         None,

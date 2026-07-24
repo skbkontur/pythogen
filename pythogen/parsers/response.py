@@ -21,10 +21,9 @@ class ResponseParser:
         self._schema_parser = schema_parser
         self._inline_schema_aggregator = inline_schema_aggregator
 
-    def parse_item(self, response_id: str, response_data: dict[str, Any]) -> models.ResponseObject:
+    def parse_item(self, response_id: str, response_data: dict[str, Any], status_code: int) -> models.ResponseObject:
         """Спарсить спецификацию ответа ручки"""
         schema = None
-
         content = response_data.get("content")
         if content:
             media_types = list(content.keys())
@@ -45,5 +44,6 @@ class ResponseParser:
         return models.ResponseObject(
             id=response_id,
             description=response_data["description"],
+            status_code=status_code,
             schema=schema,
         )

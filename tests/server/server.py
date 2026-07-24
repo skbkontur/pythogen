@@ -1,5 +1,4 @@
 import asyncio
-from typing import Union
 
 from aiohttp import web
 
@@ -31,7 +30,7 @@ async def get_object_slow(request: web.Request) -> web.json_response:
     )
 
 
-async def post_object(request: web.Request) -> Union[web.json_response, web.Response]:
+async def post_object(request: web.Request) -> web.json_response | web.Response:
     data = await request.json()
     if not data:
         return web.Response(status=500)
@@ -41,7 +40,7 @@ async def post_object(request: web.Request) -> Union[web.json_response, web.Resp
     return web.json_response(data={'status': 'OK'})
 
 
-async def patch_object(request: web.Request) -> Union[web.json_response, web.Response]:
+async def patch_object(request: web.Request) -> web.json_response | web.Response:
     data = await request.json()
     if not data:
         return web.Response(status=500)
@@ -49,7 +48,7 @@ async def patch_object(request: web.Request) -> Union[web.json_response, web.Res
     return web.json_response(data={'status': 'OK'})
 
 
-async def post_object_form_data(request: web.Request) -> Union[web.json_response, web.Response]:
+async def post_object_form_data(request: web.Request) -> web.json_response | web.Response:
     data = await request.post()
     if not data:
         return web.Response(status=500, body=data)
@@ -57,7 +56,7 @@ async def post_object_form_data(request: web.Request) -> Union[web.json_response
     return web.json_response(data={'status': 'OK'})
 
 
-async def post_file_multipart_form_data(request: web.Request) -> Union[web.json_response, web.Response]:
+async def post_file_multipart_form_data(request: web.Request) -> web.json_response | web.Response:
     data = await request.post()
 
     if not data:
@@ -73,7 +72,7 @@ async def post_file_multipart_form_data(request: web.Request) -> Union[web.json_
     return web.json_response(data={'status': 'OK'})
 
 
-async def put_object(request: web.Request) -> Union[web.json_response, web.Response]:
+async def put_object(request: web.Request) -> web.json_response | web.Response:
     data = await request.json()
     if not data:
         return web.Response(status=500)
@@ -81,7 +80,7 @@ async def put_object(request: web.Request) -> Union[web.json_response, web.Respo
     return web.json_response(data={'status': 'OK'})
 
 
-async def put_object_slow(request: web.Request) -> Union[web.json_response, web.Response]:
+async def put_object_slow(request: web.Request) -> web.json_response | web.Response:
     await asyncio.sleep(1)
     data = await request.json()
     if not data:

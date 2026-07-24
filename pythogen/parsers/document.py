@@ -18,7 +18,7 @@ from pythogen.parsers.schemas import SchemaParser
 logger = logging.getLogger(__name__)
 
 
-def parse_openapi_file(file_path: str) -> models.Document:
+def parse_openapi_file(file_path: str, ignore_unknown_format: bool) -> models.Document:
     """Корневой парсер OpenAPI-файла
 
     Парсит файл и возвращает его представление в виде pydantic-объекта.
@@ -28,7 +28,7 @@ def parse_openapi_file(file_path: str) -> models.Document:
     file_path
         Путь до OpenAPI-файла, который необходимо спарсить.
     """
-    with open(file_path) as file:
+    with open(file_path, encoding="utf-8") as file:
         openapi_data = yaml.load(file, yaml.SafeLoader)
 
     # Сюда будут складываться найденные в процессе парсинга базовые классы,
@@ -44,6 +44,7 @@ def parse_openapi_file(file_path: str) -> models.Document:
         openapi_data=openapi_data,
         discriminator_base_class_schemas=discriminator_base_class_schemas,
         inline_schema_aggregator=inline_schema_aggregator,
+        ignore_unknown_format=ignore_unknown_format,
     )
     response_parser = ResponseParser(
         ref_resolver=ref_resolver,
